@@ -24,6 +24,12 @@ def main():
         if 'pooling_type' in obj: print('pooling_type:', obj['pooling_type'])
         if 'selected_layers' in obj: print('selected_layers:', obj['selected_layers'])
         if 'layer_weights' in obj: print('layer_weights keys:', list(obj['layer_weights'].keys())[:10], '...')
+        if 'threshold' in obj: print('threshold:', obj['threshold'])
+        if 'selected_neurons_dict' in obj:
+            snd=obj['selected_neurons_dict']; print('selected_neurons_dict total:', len(snd))
+            for i,(k,v) in enumerate(snd.items()):
+                print(f'  {k}: n={len(v)} first={list(v)[:5]}')
+                if i>=4: break
         if 'final_mlp' in obj:
             print(obj['final_mlp']); print('final_mlp params:', sum(p.numel() for p in obj['final_mlp'].parameters()))
 if __name__=='__main__': main()

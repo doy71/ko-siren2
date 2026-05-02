@@ -144,36 +144,49 @@ class RepresentationExtractor:
 def load_siren_pickle(path: Path, device: str) -> Dict[str, Any]:
     print(f"[load siren pkl] {path}")
     with path.open("rb") as f: obj = pickle.load(f)
-    required = ["pooling_type", "selected_layers", "layer_weights", "final_mlp"]
+    required = ["pooling_type", "selected_neurons_dict", "layer_weights", "final_mlp"]
     missing = [k for k in required if k not in obj]
     if missing: raise RuntimeError(f"SIREN pkl missing keys: {missing}; found keys={list(obj.keys())}")
+    # selected_layers가 없으면 selected_neurons_dict 키에서 파싱
+    if "selected_layers" not in obj:
+        layers = set()
+        for key in obj["selected_neurons_dict"]:
+            try: layers.add(int(key.split("_")[0].replace("layer", "")))
+            except (ValueError, IndexError): pass
+        obj["selected_layers"] = sorted(layers)
+        print(f"[inferred selected_layers] {obj['selected_layers']}")
     obj["final_mlp"].to(device); obj["final_mlp"].eval()
     return obj
 
-def aggregate_features(representations, pooling_type, layer_weights, selected_layers) -> np.ndarray:
+def aggregate_features(representations, pooling_type, selected_neurons_dict, layer_weights, selected_layers) -> np.ndarray:
     aggregated = []
     for sample_rep in representations:
         sample_features = []
         for layer_idx_raw in selected_layers:
             layer_idx = int(layer_idx_raw)
+            key = f"layer{layer_idx}_{pooling_type}"
+            if key not in selected_neurons_dict: continue
             layer_features = sample_rep[layer_idx][pooling_type]
+            selected_indices = np.asarray(selected_neurons_dict[key], dtype=int)
+            selected_features = layer_features[selected_indices]
             weight = layer_weights.get(str(layer_idx), layer_weights.get(layer_idx, 1.0))
-            sample_features.append(layer_features * float(weight))
-        if not sample_features: raise RuntimeError("No features found. Check pooling_type/selected_layers.")
+            sample_features.append(selected_features * float(weight))
+        if not sample_features: raise RuntimeError("No features found. Check pooling_type/selected_neurons_dict.")
         aggregated.append(np.concatenate(sample_features))
     return np.asarray(aggregated, dtype=np.float32)
 
 @torch.inference_mode()
 def siren_predict(representations, siren_model, device: str, mlp_batch_size: int):
-    X = aggregate_features(representations, siren_model["pooling_type"], siren_model["layer_weights"], siren_model["selected_layers"])
+    X = aggregate_features(representations, siren_model["pooling_type"], siren_model["selected_neurons_dict"], siren_model["layer_weights"], siren_model["selected_layers"])
     model = siren_model["final_mlp"]
+    threshold = float(siren_model.get("threshold", 0.5))
     preds, unsafe_scores = [], []
     for i in range(0, len(X), mlp_batch_size):
         logits = model(torch.from_numpy(X[i:i+mlp_batch_size]).to(device))
         if logits.shape[-1] == 1:
-            score = torch.sigmoid(logits.reshape(-1)); pred = (score >= 0.5).long()
+            score = torch.sigmoid(logits.reshape(-1)); pred = (score >= threshold).long()
         else:
-            probs = torch.softmax(logits, dim=-1); score = probs[:, 1]; pred = torch.argmax(probs, dim=-1)
+            probs = torch.softmax(logits, dim=-1); score = probs[:, 1]; pred = (score >= threshold).long()
         preds.extend(pred.detach().cpu().numpy().astype(int).tolist())
         unsafe_scores.extend(score.detach().cpu().numpy().astype(float).tolist())
     return np.asarray(preds, dtype=int), np.asarray(unsafe_scores, dtype=float)
